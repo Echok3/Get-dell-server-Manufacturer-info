@@ -1,4 +1,4 @@
-# get-dell-server-Manufacturer-info
+# Get-dell-server-Manufacturer-info
 Getting dell server vendor information with a crawler
 
 ## 解决 Persisting spaCy import error: NotOpenSSLWarning: urllib3 v2.0 only supports OpenSSL 1.1.1+ #12740
