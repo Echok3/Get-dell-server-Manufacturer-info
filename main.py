@@ -84,7 +84,7 @@ def test_eight_components(sn):
         serverType = serverType.text
         print(serverType)
     except NoSuchElementException:
-        serverType = -''
+        serverType = '-'
         print("未找到元素，跳过")
 
     time.sleep(5)
