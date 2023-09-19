@@ -27,8 +27,11 @@ def test_eight_components(sn):
 
     # 点击后展示的内容
     # 点击事件
-    clickBtn = driver.find_element(by=By.ID, value="viewDetailsWarranty")
-    clickBtn.click()
+    try:
+        clickBtn = driver.find_element(by=By.ID, value="viewDetailsWarranty")
+        clickBtn.click()
+    except NoSuchElementException:
+        print("未找到元素，跳过")
 
     # 抓取位置
     try:
@@ -87,9 +90,9 @@ def test_eight_components(sn):
     time.sleep(5)
 
     # 将结果添加到数据框
-    data.append([expiryDate, locationContent, expiryCode, shippingDate, suppSvcPlan, serviceTag, serverType])
+    data.append([sn, expiryDate, locationContent, expiryCode, shippingDate, suppSvcPlan, serviceTag, serverType])
     # 创建一个 pandas 数据框
-    df = pd.DataFrame(data, columns=["到期时间", "位置", "エクスプレス サービス コード", "出荷日", "サポート サービス", "サービス タグ", "型号"])
+    df = pd.DataFrame(data, columns=["检查中的SN", "到期时间", "位置", "エクスプレス サービス コード", "出荷日", "サポート サービス", "サービス タグ", "型号"])
 
     # 打印表格形式的结果
     print(df)
