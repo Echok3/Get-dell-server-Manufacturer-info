@@ -63,7 +63,7 @@ def test_eight_components(sn):
 
     # 抓取 サポート サービス:
     try:
-        suppSvcPlan = driver.find_element(By.CSS_SELECTOR, "#supp-svc-plan-txt-1 span")
+        suppSvcPlan = driver.find_element(By.CSS_SELECTOR, "#supp-svc-plan-txt-2 span")
         suppSvcPlan = suppSvcPlan.text
         print(suppSvcPlan)
     except NoSuchElementException:
