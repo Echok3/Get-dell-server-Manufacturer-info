@@ -13,7 +13,7 @@ def test_eight_components(sn):
     data = []
 
     driver.implicitly_wait(0.5)
-    time.sleep(30)
+    time.sleep(27)
 
     # 抓取到期时间
     try:
@@ -30,6 +30,7 @@ def test_eight_components(sn):
     try:
         clickBtn = driver.find_element(by=By.ID, value="viewDetailsWarranty")
         clickBtn.click()
+        time.sleep(5)
     except NoSuchElementException:
         print("未找到元素，跳过")
 
