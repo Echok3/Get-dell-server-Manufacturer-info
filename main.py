@@ -1,136 +1,141 @@
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.common.exceptions import NoSuchElementException
-import time
+# -*- coding: utf-8 -*-
+# 用法：python crawler.py service_tags.txt   生成：dell_assets.csv
+import asyncio, random, sys
 import pandas as pd
+from pathlib import Path
+from playwright.async_api import async_playwright, TimeoutError as PWTimeout
 
-driver = webdriver.Chrome()
+URL = "https://www.dell.com/support/product-details/zh-cn/servicetag/{tag}/overview"  # 中文站
 
-def test_eight_components(sn):
-    driver.get("https://www.dell.com/support/home/ja-jp/product-support/servicetag/" + sn + "/overview")
+def clean(s: str) -> str:
+    return " ".join((s or "").replace("\u3000", " ").split())
 
-    # 创建一个空的数据框来存储结果
-    data = []
-
-    driver.implicitly_wait(0.5)
-    time.sleep(27)
-
-    # 抓取到期时间
+async def wait_page_ready(page):
+    await page.wait_for_load_state("domcontentloaded", timeout=60000)
+    # Cookie
     try:
-        expiryDate = driver.find_element(by=By.CLASS_NAME, value="warrantyExpiringLabel")
-        expiryDate = expiryDate.text
-        print(expiryDate)
-    except NoSuchElementException:
-        expiryDate = '-'
-        print("未找到元素，跳过")
-
-
-    # 点击后展示的内容
-    # 点击事件
+        btn = page.locator("#onetrust-accept-btn-handler, button:has-text('接受全部'), button:has-text('Accept All')")
+        if await btn.count() > 0:
+            await btn.first.click(timeout=2000)
+            await page.wait_for_timeout(300)
+    except Exception:
+        pass
+    # 关键节点；不出就刷新一次
+    js_ready = "() => document.querySelector('#serviceTagLabel') || document.querySelector('a.primaryWarrantyName')"
     try:
-        clickBtn = driver.find_element(by=By.ID, value="viewDetailsWarranty")
-        clickBtn.click()
-        time.sleep(5)
-    except NoSuchElementException:
-        print("未找到元素，跳过")
+        await page.wait_for_function(js_ready, timeout=6000)
+    except PWTimeout:
+        await page.reload(wait_until="domcontentloaded", timeout=60000)
+        await page.wait_for_function(js_ready, timeout=8000)
+    await page.wait_for_timeout(500 + random.randint(0, 700))
 
-    # 抓取位置
-    try:
-        locationContent = driver.find_element(By.CSS_SELECTOR, "#countryLabel div")
-        locationContent = locationContent.text
-        print(locationContent)
-    except NoSuchElementException:
-        locationContent = '-'
-        print("未找到元素，跳过")
+async def scrape_one(page, tag, max_retry=4):
+    for attempt in range(max_retry):
+        try:
+            await page.context.clear_cookies()  # 防止上一次会话把语言带回去
+            await page.goto(URL.format(tag=tag), wait_until="domcontentloaded", timeout=60000, referer="https://www.dell.com/support/home/zh-cn")
+            await wait_page_ready(page)
 
-    # 抓取 エクスプレス サービス コード
-    try:
-        expiryCode = driver.find_element(By.CSS_SELECTOR, "#expressservicelabel div")
-        expiryCode = expiryCode.text
-        print(expiryCode)
-    except NoSuchElementException:
-        expiryCode = '-'
-        print("未找到元素，跳过")
+            # 有“管理服务/主要支持服务状态”按钮就点
+            if await page.locator("a.primaryWarrantyName").count() > 0:
+                await page.locator("a.primaryWarrantyName").first.click()
+                await page.wait_for_selector("#pss-status, #pss-timeline, #supp-svc-status-txt", timeout=10000)
 
-    # 抓取 出荷日
-    try:
-        shippingDate = driver.find_element(By.CSS_SELECTOR, "#shippingDateLabel div")
-        shippingDate = shippingDate.text
-        print(shippingDate)
-    except NoSuchElementException:
-        shippingDate = '-'
-        print("未找到元素，跳过")
+            row = {"输入标签": tag}
 
-    # 抓取 サポート サービス:
-    try:
-        suppSvcPlan = driver.find_element(By.CSS_SELECTOR, "#supp-svc-plan-txt-2 span")
-        suppSvcPlan = suppSvcPlan.text
-        print(suppSvcPlan)
-    except NoSuchElementException:
-        suppSvcPlan = '-'
-        print("未找到元素，跳过")
+            # 基本信息（语言无关）
+            base = {
+                "服务标签":   "#serviceTagLabel > div:nth-of-type(2)",
+                "快速服务码": "#expressservicelabel > div:nth-of-type(2)",
+                "出货日期":   "#shippingDateLabel > div:nth-of-type(2)",
+                "国家/地区":  "#countryLabel > div:nth-of-type(2)",
+            }
+            for k, sel in base.items():
+                loc = page.locator(sel).first
+                row[k] = clean(await loc.inner_text()) if await loc.count() > 0 else ""
 
-    # 抓取 サービス タグ:
-    try:
-        serviceTag = driver.find_element(By.CSS_SELECTOR, "#serviceTagLabel div")
-        serviceTag = serviceTag.text
-        print(serviceTag)
-    except NoSuchElementException:
-        serviceTag = '-'
-        print("未找到元素，跳过")
+            # 保修信息（中文 DOM）
+            STATUS_XP = "//*[@id='supp-svc-status-txt']/ancestor::div[contains(@class,'dds__pt-1')][1]/following-sibling::div[1]//span[contains(@class,'dds__body-2')]"
+            PLAN_XP   = "//*[@id='supp-svc-plan-txt-2']/ancestor::div[contains(@class,'dds__pt-1')][1]/following-sibling::div[1]//span[contains(@class,'dds__body-2')]"
 
-    # 抓取型号
-    try:
-        serverType = driver.find_element(by=By.CLASS_NAME, value="desc-size")
-        serverType = serverType.text
-        print(serverType)
-    except NoSuchElementException:
-        serverType = '-'
-        print("未找到元素，跳过")
+            status_loc = page.locator(f"xpath={STATUS_XP}").first
+            plan_loc   = page.locator(f"xpath={PLAN_XP}").first
+            row["状态"]     = clean(await status_loc.inner_text()) if await status_loc.count() > 0 else ""
+            row["当前计划"] = clean(await plan_loc.inner_text())   if await plan_loc.count() > 0 else ""
 
-    time.sleep(5)
+            for k, sel in {
+                "开始日期": "#dsk-purchaseDt strong",
+                "结束日期": "#dsk-expirationDt strong",
+            }.items():
+                loc = page.locator(sel).first
+                row[k] = clean(await loc.inner_text()) if await loc.count() > 0 else ""
 
-    # 将结果添加到数据框
-    data.append([sn, expiryDate, locationContent, expiryCode, shippingDate, suppSvcPlan, serviceTag, serverType])
-    # 创建一个 pandas 数据框
-    df = pd.DataFrame(data, columns=["检查中的SN", "到期时间", "位置", "エクスプレス サービス コード", "出荷日", "サポート サービス", "サービス タグ", "型号"])
+            # 兜底（中文标签→紧邻值）
+            if not (row.get("服务标签") or row.get("快速服务码")):
+                for label, out_key in {
+                    "服务标签": "服务标签",
+                    "快速服务代码": "快速服务码",
+                    "出货日期": "出货日期",
+                    "位置": "国家/地区",
+                    "国家/地区": "国家/地区",
+                }.items():
+                    xp = f"//*[normalize-space(text())='{label}']/following::*[not(self::script or self::style)][normalize-space()][1]"
+                    loc = page.locator(f"xpath={xp}").first
+                    if await loc.count() > 0:
+                        row[out_key] = clean(await loc.inner_text())
 
-    # 打印表格形式的结果
-    print(df)
-    # 导出为CSV文件（追加）
-    df.to_csv("server_data.csv", mode='a', header=False, index=False)
-    # 下面是覆盖
-    # df.to_csv("server_data.csv", index=False)
-    # print("Data exported to server_data.csv")
+            if row.get("服务标签") or row.get("快速服务码"):
+                return row
 
-def read_txt_file(file_path):
-    try:
-        # 打开文件并指定只读模式 ('r')
-        with open(file_path, 'r') as file:
-            # 或者逐行读取文件内容并保存为列表
-            content_list = file.readlines()
-        # 返回文件内容（整个内容或行列表）
-        return content_list
-    except FileNotFoundError:
-        print(f"文件 '{file_path}' 未找到。")
-        return None
+            await page.wait_for_timeout(1200 + attempt * 600 + random.randint(0, 500))
+        except Exception:
+            await page.wait_for_timeout(1200 + attempt * 600 + random.randint(0, 500))
 
+    keys = ["服务标签","快速服务码","出货日期","国家/地区","状态","当前计划","开始日期","结束日期"]
+    return {"输入标签": tag, **{k: "" for k in keys}}
 
-if __name__ == '__main__':
+async def main():
+    tags_file = sys.argv[1] if len(sys.argv) > 1 else "service_tags.txt"
+    tags = [t.strip() for t in Path(tags_file).read_text(encoding="utf-8").splitlines() if t.strip()]
+    random.shuffle(tags)
 
-    # 示例：读取 example.txt 文件内容
-    file_path = 'sn_list.txt'
-    sn_list = []
+    async with async_playwright() as p:
+        # 用系统 Chrome，并强制中文首选
+        browser = await p.chromium.launch(
+            channel="chrome",
+            headless=False,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ],
+        )
+        context = await browser.new_context(
+            no_viewport=True,
+            locale="zh-CN",
+            bypass_csp=True,
+            ignore_https_errors=True,
+            extra_http_headers={"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.5"},
+        )
+        # 伪装浏览器首选语言（防止站点用 JS 读 navigator.language）
+        await context.add_init_script("""
+            Object.defineProperty(navigator, 'language', {get: () => 'zh-CN'});
+            Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN','zh','en']});
+        """)
+        page = await context.new_page()
 
-    file_content = read_txt_file(file_path)
-    if file_content is not None:
-        # 打印文件内容
-        for line in file_content:
-            sn_list.append(line.strip())
-            # print(array_data)
+        rows = []
+        for i, tag in enumerate(tags, 1):
+            rows.append(await scrape_one(page, tag))
+            await page.wait_for_timeout(400 + random.randint(0, 600))
+            if i % 20 == 0:
+                await page.wait_for_timeout(2500 + random.randint(0, 1200))
 
-    for sn in sn_list:
-        test_eight_components(sn)
+        await browser.close()
 
-    driver.quit()
-    print("Data exported to server_data.csv")
+    cols = ["输入标签","服务标签","快速服务码","出货日期","国家/地区","状态","当前计划","开始日期","结束日期"]
+    pd.DataFrame(rows, columns=cols).to_csv("dell_assets.csv", index=False, encoding="utf-8")
+    print("保存完成 -> dell_assets.csv")
+
+if __name__ == "__main__":
+    asyncio.run(main())
